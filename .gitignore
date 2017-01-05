@@ -1,2 +1,5 @@
 /RtpHttpGateway/bin
 /RtpHttpGateway/obj
+/.vs
+/packages
+/RtpHttpGateway/*.user
