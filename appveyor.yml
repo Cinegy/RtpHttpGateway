@@ -1,0 +1,23 @@
+version: 1.0.{build}
+configuration: Release
+platform: Any CPU
+assembly_info:
+  patch: true
+  file: '**\AssemblyInfo.*'
+  assembly_version: '{version}'
+  assembly_file_version: '{version}'
+  assembly_informational_version: '{version}'
+before_build:
+- cmd: nuget restore
+build:
+  project: RtpHttpGateway.sln
+  verbosity: minimal
+after_build:
+- cmd: >-
+    7z a RtpHttpGateway-%APPVEYOR_REPO_BRANCH%-%APPVEYOR_BUILD_VERSION%.zip %APPVEYOR_BUILD_FOLDER%\RtpHttpGateway\bin\release\RtpHttpGateway.exe
+
+    appveyor PushArtifact RtpHttpGateway-%APPVEYOR_REPO_BRANCH%-%APPVEYOR_BUILD_VERSION%.zip
+    
+    7z a RtpHttpGateway-%APPVEYOR_REPO_BRANCH%-%APPVEYOR_BUILD_VERSION%-PDB.zip %APPVEYOR_BUILD_FOLDER%\RtpHttpGateway\bin\release
+
+    appveyor PushArtifact RtpHttpGateway-%APPVEYOR_REPO_BRANCH%-%APPVEYOR_BUILD_VERSION%-PDB.zip
