@@ -56,8 +56,8 @@ namespace RtpHttpGateway
         private const string UrlPrefix = "http://{0}:{1}/tsstream/";
         private const int RtpHeaderSize = 12;
         private static bool _receiving;
-        private static readonly UdpClient UdpClient = new UdpClient { ExclusiveAddressUse = false };
-        private static readonly HttpListener Listener = new HttpListener();
+        private static UdpClient _udpClient;
+        private static HttpListener _listener;
         private static BinaryWriter _outputWriter;
         private static bool _packetsStarted;
         private static bool _suppressOutput = false;
@@ -96,12 +96,10 @@ namespace RtpHttpGateway
             }
 
             Console.Clear();
-
-            var newOpts = new StreamOptions();
-
+  
             //TODO: I don't like that i don't get the default value specified as an attribute - but can't be bothered to figure out right now
-            newOpts.ListenPort = 8082;
-
+            var newOpts = new StreamOptions {ListenPort = 8082};
+            
             return Run(newOpts);
         }
 
@@ -178,13 +176,8 @@ namespace RtpHttpGateway
 
         private static int Run(StreamOptions options)
         {
-            var prefixAddr = "127.0.0.1";
-
-            if (!IsNullOrEmpty(options.AdapterAddress))
-            {
-                prefixAddr = options.AdapterAddress;
-            }
-
+            Console.CancelKeyPress += Console_CancelKeyPress;
+            
             _suppressOutput = options.SuppressOutput;
             
             Console.WriteLine(
@@ -194,32 +187,13 @@ namespace RtpHttpGateway
             _options = options;
 
             GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
-
-            var prefix = Format(UrlPrefix, prefixAddr, options.ListenPort);
-
-            Listener.Prefixes.Add(prefix);
             
-            try
-            {
-                Listener.Start();
-            }
-            catch (Exception ex)
-            {
-                PrintToConsole("Exception creating web listener: " + ex.Message);
-                PrintToConsole("Probably the URL is not reserved - either reserve, or run as admin!");
-                PrintToConsole("For reference, type from elevated command prompt:");
-                PrintToConsole($@"netsh http add urlacl url={prefix} user=BUILTIN\users");
-                PrintToConsole("");
-                PrintToConsole("Hit any key to exit");
-                Console.ReadLine();
-                return (int)ExitCodes.UrlAccessDenied;
-            }
-
             RunWebListener();
 
             PrintToConsole("--Limited to one client in this version--");
             PrintToConsole("\nWeb listener started, waiting for a client...");
-            PrintToConsole(Format("\nTo stream point VLC or WMP to\n{0}multicast-ip/portnumber", Format(UrlPrefix, prefixAddr, options.ListenPort)));
+            PrintToConsole(
+                $"\nTo stream point VLC or WMP to\n{Format(UrlPrefix, _options.AdapterAddress, options.ListenPort)}multicast-ip/portnumber");
             PrintToConsole("Note: Windows MP only supports SPTS!");
 
             while (!_pendingExit)
@@ -234,18 +208,20 @@ namespace RtpHttpGateway
             var listenAddress = IsNullOrEmpty(_options.AdapterAddress) ? IPAddress.Any : IPAddress.Parse(_options.AdapterAddress);
 
             var localEp = new IPEndPoint(listenAddress, multicastGroup);
+            
+            _udpClient = new UdpClient { ExclusiveAddressUse = false };
 
-            UdpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            UdpClient.Client.ReceiveBufferSize = 1500 * 3000;
-            UdpClient.ExclusiveAddressUse = false;
-            UdpClient.Client.Bind(localEp);
+            _udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            _udpClient.Client.ReceiveBufferSize = 1500 * 3000;
+            _udpClient.ExclusiveAddressUse = false;
+            _udpClient.Client.Bind(localEp);
 
             var parsedMcastAddr = IPAddress.Parse(multicastAddress);
-            UdpClient.JoinMulticastGroup(parsedMcastAddr, listenAddress);
+            _udpClient.JoinMulticastGroup(parsedMcastAddr, listenAddress);
 
             var ts = new ThreadStart(delegate
             {
-                ReceivingNetworkWorkerThread(UdpClient, localEp);
+                ReceivingNetworkWorkerThread(_udpClient, localEp);
             });
 
             var receiverThread = new Thread(ts) { Priority = ThreadPriority.Highest };
@@ -280,7 +256,10 @@ namespace RtpHttpGateway
                         else
                         {
                             PrintToConsole("Writing to null output writer...");
-                            Environment.Exit((int)ExitCodes.NullOutputWriter);
+                            //Environment.Exit((int)ExitCodes.NullOutputWriter);
+                            client.Close();
+                            RunWebListener();
+                            return;
                         }
 
                     }
@@ -289,12 +268,15 @@ namespace RtpHttpGateway
                         PrintToConsole(Format(@"Writing to client stopped - probably client disconnected...: {0}", listenerException.Message));
                         _outputWriter = null;
                         _receiving = false;
-                        Environment.Exit((int)ExitCodes.InvalidContext);
+                        //Environment.Exit((int)ExitCodes.InvalidContext);
+                        client.Close();
+                        RunWebListener();
+                        return;
                     }
                     catch (Exception ex)
                     {
                         PrintToConsole(Format(@"Unhandled exception within network receiver: {0}", ex.Message));
-                        Environment.Exit((int)ExitCodes.UnknownError);
+                        return;
                     }
                 }
             }
@@ -302,12 +284,49 @@ namespace RtpHttpGateway
 
         public static void RunWebListener()
         {
+            try
+            {
+                _listener?.Abort();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Abort failed: {ex.Message}");
+            }
+
+            _listener = new HttpListener();
+            var prefixAddr = "127.0.0.1";
+
+            if (!IsNullOrEmpty(_options.AdapterAddress))
+            {
+                prefixAddr = _options.AdapterAddress;
+            }
+
+            var prefix = Format(UrlPrefix, prefixAddr, _options.ListenPort);
+
+            _listener.Prefixes.Add(prefix);
+
+            try
+            {
+                _listener.Start();
+            }
+            catch (Exception ex)
+            {
+                PrintToConsole("Exception creating web listener: " + ex.Message);
+                PrintToConsole("Probably the URL is not reserved - either reserve, or run as admin!");
+                PrintToConsole("For reference, type from elevated command prompt:");
+                PrintToConsole($@"netsh http add urlacl url={prefix} user=BUILTIN\users");
+                PrintToConsole("");
+                PrintToConsole("Hit any key to exit");
+                Console.ReadLine();
+                Environment.Exit((int)ExitCodes.UrlAccessDenied);
+            }
+
             ThreadPool.QueueUserWorkItem(o =>
             {
                 PrintToConsole(Format(("Webserver running...")));
                 try
                 {
-                    while (Listener.IsListening)
+                    while (_listener.IsListening)
                     {
                         ThreadPool.QueueUserWorkItem(c =>
                         {
@@ -334,23 +353,22 @@ namespace RtpHttpGateway
                             catch (Exception ex)
                             {
                                 PrintToConsole(Format("Exception: {0}", ex.Message));
-                                Environment.Exit((int)ExitCodes.UnknownError);
                             }
-                        }, Listener.GetContext());
+                        }, _listener.GetContext());
                     }
                 }
                 catch (Exception ex)
                 {
                     PrintToConsole(Format("Exception: {0}", ex.Message));
-                    Environment.Exit((int)ExitCodes.UnknownError);
                 }
             });
+            
         }
 
         public static void StopWebListener()
         {
-            Listener.Stop();
-            Listener.Close();
+            _listener.Stop();
+            _listener.Close();
         }
 
         private static void SetupMulticastReceiverForSession(string url)
