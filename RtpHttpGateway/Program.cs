@@ -301,7 +301,7 @@ namespace RtpHttpGateway
                 prefixAddr = _options.AdapterAddress;
             }
 
-            var prefix = Format(UrlPrefix, prefixAddr, _options.ListenPort);
+            var prefix = Format(UrlPrefix, "+", _options.ListenPort);
 
             _listener.Prefixes.Add(prefix);
 
