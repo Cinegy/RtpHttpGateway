@@ -21,7 +21,6 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Threading;
 using CommandLine;
-using CommandLine.Text;
 using static System.String;
 using System.Runtime;
 using System.Text;
@@ -226,6 +225,12 @@ namespace RtpHttpGateway
                     {
                         if (_outputWriter != null)
                         {
+                            //TODO: Move this test jitter-inducing code to option
+                            //if (DateTime.Now.Millisecond % 300 == 0 )
+                            //{
+                            //    Console.WriteLine("Adding 100ms cheeky sleep");
+                            //    Thread.Sleep(100);
+                            //}
                             _outputWriter.Write(data, RtpHeaderSize, data.Length - RtpHeaderSize);
                         }
                         else
