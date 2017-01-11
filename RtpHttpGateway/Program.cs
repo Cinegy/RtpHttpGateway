@@ -205,7 +205,7 @@ namespace RtpHttpGateway
         
         private static void StartListeningToNetwork(string multicastAddress, int multicastGroup)
         {
-            var listenAddress = IsNullOrEmpty(_options.AdapterAddress) ? IPAddress.Any : IPAddress.Parse(_options.AdapterAddress);
+            var listenAddress = IsNullOrEmpty(_options.MulticastAdapterAddress) ? IPAddress.Any : IPAddress.Parse(_options.MulticastAdapterAddress);
 
             var localEp = new IPEndPoint(listenAddress, multicastGroup);
             
