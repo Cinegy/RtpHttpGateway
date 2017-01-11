@@ -71,36 +71,11 @@ namespace RtpHttpGateway
 
         static int Main(string[] args)
         {
-            //if (args == null || args.Length == 0)
-            //{
-            //    return RunInteractive();
-            //}
-            
             var result = Parser.Default.ParseArguments<StreamOptions>(args);
 
             return result.MapResult(
                 (StreamOptions opts) => Run(opts),
                 errs => CheckArgumentErrors());
-        }
-
-        private static int RunInteractive()
-        {
-            Console.WriteLine("No arguments supplied - would you like to just run with defaults? [Y/N]");
-            var response = Console.ReadKey();
-
-            if (response.Key != ConsoleKey.Y)
-            {
-                Console.WriteLine("\n\n");
-                Parser.Default.ParseArguments<StreamOptions>(new string[] { });
-                return CheckArgumentErrors();
-            }
-
-            Console.Clear();
-  
-            //TODO: I don't like that i don't get the default value specified as an attribute - but can't be bothered to figure out right now
-            var newOpts = new StreamOptions {ListenPort = 8082};
-            
-            return Run(newOpts);
         }
 
         private static int CheckArgumentErrors()
