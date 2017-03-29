@@ -43,12 +43,24 @@ namespace RtpHttpGateway
         HelpText = "IP address of the adapter to serve HTTP requests from (if not set, tries first binding adapter).")]
         public string AdapterAddress { get; set; }
 
-        [Option('m', "multicastadapter", Required = false,
+        [Option('b', "multicastadapter", Required = false,
         HelpText = "IP address of the adapter to listen for multicast data (if not set, tries first binding adapter).")]
         public string MulticastAdapterAddress { get; set; }
+
+        [Option('m', "multicastaddress", Required = true,
+        HelpText = "Multicast address to subscribe this instance to.")]
+        public string MulticastAddress { get; set; }
+
+        [Option('g', "multicastgroup", Required = true,
+        HelpText = "Multicast group (port number) to subscribe this instance to.")]
+        public int MulticastGroup { get; set; }
 
         [Option('n', "nortpheaders", Required = false, Default = false,
         HelpText = "Optional instruction to skip the expected 12 byte RTP headers (meaning plain MPEGTS inside UDP is expected")]
         public bool NoRtpHeaders { get; set; }
+
+        [Option('d', "bufferdepth", Required = false, Default = 100000,
+        HelpText = "Optional instruction to control the number of TS packets cached within random access window buffer")]
+        public int BufferDepth { get; set; }
     }
 }
