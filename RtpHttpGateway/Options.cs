@@ -1,10 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using CommandLine;
-using CommandLine.Text;
+﻿using CommandLine;
 
 namespace RtpHttpGateway
 {
@@ -59,7 +53,7 @@ namespace RtpHttpGateway
         HelpText = "Optional instruction to skip the expected 12 byte RTP headers (meaning plain MPEGTS inside UDP is expected")]
         public bool NoRtpHeaders { get; set; }
 
-        [Option('d', "bufferdepth", Required = false, Default = 100000,
+        [Option('s', "buffersize", Required = false, Default = 100000,
         HelpText = "Optional instruction to control the number of TS packets cached within random access window buffer")]
         public int BufferDepth { get; set; }
     }

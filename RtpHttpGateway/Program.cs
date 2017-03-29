@@ -15,6 +15,7 @@
 */
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -38,38 +39,41 @@ namespace RtpHttpGateway
     /// 
     /// Originally created by Lewis, so direct complaints his way.
     /// </summary>
-    internal class Program
+    public class Program
     {
 
         private enum ExitCodes
         {
-            // ReSharper disable UnusedMember.Local
-            NullOutputWriter = 100,
             UrlAccessDenied = 102,
             UnknownError = 2000
-            // ReSharper restore UnusedMember.Local
         }
 
         private const string UrlPrefix = "http://{0}:{1}/tsstream/";
-        private const int RtpHeaderSize = 12;
-        private static bool _receiving;
         private static UdpClient _udpClient;
         private static HttpListener _listener;
-        private static BinaryWriter _outputWriter;
         private static bool _packetsStarted;
         private static bool _suppressOutput;
         private static bool _pendingExit;
         private static RingBuffer _ringBuffer;
-
         private static StreamOptions _options;
+        private static readonly List<StreamClient> StreamingClients = new List<StreamClient>();
 
-        static int Main(string[] args)
+        private static int Main(string[] args)
         {
-            var result = Parser.Default.ParseArguments<StreamOptions>(args);
+            try
+            {
+                var result = Parser.Default.ParseArguments<StreamOptions>(args);
 
-            return result.MapResult(
-                Run,
-                errs => CheckArgumentErrors());
+                return result.MapResult(
+                    Run,
+                    errs => CheckArgumentErrors());
+            }
+            catch (Exception ex)
+            {
+                Environment.ExitCode = (int)ExitCodes.UnknownError;
+                PrintToConsole("Unknown error: " + ex.Message);
+                throw;
+            }
         }
 
         private static int CheckArgumentErrors()
@@ -96,21 +100,21 @@ namespace RtpHttpGateway
         private static int Run(StreamOptions options)
         {
             Console.CancelKeyPress += Console_CancelKeyPress;
-            
+
             _suppressOutput = options.SuppressOutput;
-            
+
             Console.WriteLine(
                // ReSharper disable once AssignNullToNotNullAttribute
                $"Cinegy RTP to HTTP gateway tool (Built: {File.GetCreationTime(Assembly.GetExecutingAssembly().Location)})\n");
-            
+
             _options = options;
 
             GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
-            
+
             StartListeningToNetwork();
 
             RunWebListener();
-            
+
             PrintToConsole("\nWeb listener started, waiting for a client...");
             PrintToConsole(
                 $"\nTo stream point VLC or WMP to\n{Format(UrlPrefix, _options.AdapterAddress, options.ListenPort)}latest");
@@ -118,19 +122,55 @@ namespace RtpHttpGateway
 
             while (!_pendingExit)
             {
-                Thread.Sleep(50);
+                Thread.Sleep(100);
+                
+                Console.SetCursorPosition(0, 12);
+                Console.WriteLine($"Client Connection Count: {StreamingClients?.Count}\t\t");
+                Console.WriteLine($"Ring Buffer position: {_ringBuffer.NextAddPosition}\t\t");
+
+                if (StreamingClients == null) continue;
+
+                lock (StreamingClients)
+                {
+                    foreach (var streamClient in StreamingClients)
+                    {
+                        if (streamClient.ThreadState == ThreadState.Stopped)
+                        {
+                            StreamingClients.Remove(streamClient);
+                            Console.WriteLine("\t\t\t\t\t\t\t\t\t");
+                            break;
+                        }
+
+                        Console.WriteLine($"Client {streamClient.ClientAddress} stream position: {streamClient.ClientPosition}\t\t");
+                    }
+                }
+
+                Console.WriteLine("\t\t\t\t\t\t\t\t\t");
             }
 
+            if (StreamingClients != null)
+            {
+                lock (StreamingClients)
+                {
+                    foreach (var streamClient in StreamingClients)
+                    {
+                        streamClient.Stop();
+                    }
+                }
+            }
+
+            StopWebListener();
+
             return 0;
-            
+
         }
-        
+
         private static void StartListeningToNetwork()
         {
             var listenAddress = IsNullOrEmpty(_options.MulticastAdapterAddress) ? IPAddress.Any : IPAddress.Parse(_options.MulticastAdapterAddress);
 
             var localEp = new IPEndPoint(listenAddress, _options.MulticastGroup);
-            
+
             _udpClient = new UdpClient { ExclusiveAddressUse = false };
 
             _ringBuffer = new RingBuffer(_options.BufferDepth);
@@ -179,17 +219,8 @@ namespace RtpHttpGateway
             }
         }
 
-        public static void RunWebListener()
+        private static void RunWebListener()
         {
-            try
-            {
-                _listener?.Abort();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Abort failed: {ex.Message}");
-            }
-
             _listener = new HttpListener();
 
             if (!IsNullOrEmpty(_options.AdapterAddress))
@@ -218,7 +249,6 @@ namespace RtpHttpGateway
 
             ThreadPool.QueueUserWorkItem(o =>
             {
-                PrintToConsole(Format(("Webserver running...")));
                 try
                 {
                     while (_listener.IsListening)
@@ -228,67 +258,26 @@ namespace RtpHttpGateway
                             var ctx = c as HttpListenerContext;
                             try
                             {
-                                if (ctx == null)
-                                {
-                                    throw (new InvalidOperationException("Null context - not expected!"));
-                                }
-                                //ctx.Response.SendChunked = false;
+                                if (ctx == null) return;
 
                                 ctx.Response.ContentType = "video/mp2t";
                                 ctx.Response.Headers.Add("Access-Control-Allow-Origin", "*");
 
-                                if (ctx.Request.RemoteEndPoint != null)
-                                    PrintToConsole(
-                                        $@"{DateTime.Now.TimeOfDay} - Starting output to client: {ctx.Request
-                                            .RemoteEndPoint.Address}");
+                                if (ctx.Request.RemoteEndPoint == null) return;
 
-                                _outputWriter = new BinaryWriter(ctx.Response.OutputStream);
-
-                                var clientStreamPos = _ringBuffer.NextAddPosition;
-                                var data = new byte[1500];
-
-                                while (true)
+                                var streamClient = new StreamClient(_ringBuffer)
                                 {
-                                    while(clientStreamPos == _ringBuffer.NextAddPosition)
-                                    {
-                                        Thread.Sleep(1);
-                                    }
+                                    OutputWriter = new BinaryWriter(ctx.Response.OutputStream),
+                                    ClientAddress = ctx.Request.RemoteEndPoint.ToString()
 
-                                    if (clientStreamPos > _ringBuffer.BufferSize)
-                                        clientStreamPos = 0;
+                                };
 
-                                    int dataLen;
-                                    if (_ringBuffer.Peek(clientStreamPos, ref data, out dataLen) != 0)
-                                    {
-                                        Console.WriteLine("Resizing buffer");
-                                        data = new byte[dataLen];
-                                        _ringBuffer.Peek(clientStreamPos, ref data, out dataLen);
-                                    }
-                                    
-                                    if (clientStreamPos%200 == 0)
-                                    {
-                                        var oldTop = Console.CursorTop;
-                                        Console.SetCursorPosition(0, 19);
-                                        Console.WriteLine($"Client Buffer position: {_ringBuffer.NextAddPosition}\t\t");
-                                        Console.SetCursorPosition(0, 20);
-                                        Console.WriteLine($"Ring Buffer position: {_ringBuffer.NextAddPosition}\t\t");
-                                        Console.SetCursorPosition(0, oldTop);
-                                    }
-                                    
-                                    try
-                                    {
-                                        if (dataLen != 0)
-                                        {
-                                            _outputWriter.Write(data, RtpHeaderSize, dataLen - RtpHeaderSize);
-                                        }
-                                    }
-                                    catch (Exception)
-                                    {
-                                        return;
-                                    }
-                                    clientStreamPos++;
+                                lock (StreamingClients)
+                                {
+                                    StreamingClients.Add(streamClient);
                                 }
 
+                                streamClient.Start();
                             }
                             catch (Exception ex)
                             {
@@ -302,15 +291,15 @@ namespace RtpHttpGateway
                     PrintToConsole($"Exception: {ex.Message}");
                 }
             });
-            
+
         }
 
-        public static void StopWebListener()
+        private static void StopWebListener()
         {
             _listener.Stop();
             _listener.Close();
         }
-        
+
         private static void PrintToConsole(string message)
         {
             if (_suppressOutput)
@@ -343,5 +332,5 @@ namespace RtpHttpGateway
         //}
 
     }
-    
+
 }
