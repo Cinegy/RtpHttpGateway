@@ -141,7 +141,7 @@ namespace RtpHttpGateway
                             break;
                         }
 
-                        Console.WriteLine($"Client {streamClient.ClientAddress} stream position: {streamClient.ClientPosition}\t\t");
+                        Console.WriteLine($"Client {streamClient.ClientAddress} stream position: {streamClient.ClientPosition} (delta: {_ringBuffer.NextAddPosition - streamClient.ClientPosition})\t\t");
                     }
                 }
 
