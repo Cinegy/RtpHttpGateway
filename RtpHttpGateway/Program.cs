@@ -48,7 +48,7 @@ namespace RtpHttpGateway
             UnknownError = 2000
         }
 
-        private const string UrlPrefix = "http://{0}:{1}/tsstream/";
+        private const string UrlPrefix = "http://{0}:{1}/";
         private static UdpClient _udpClient;
         private static HttpListener _listener;
         private static bool _packetsStarted;
@@ -117,7 +117,7 @@ namespace RtpHttpGateway
 
             PrintToConsole("\nWeb listener started, waiting for a client...");
             PrintToConsole(
-                $"\nTo stream point VLC or WMP to\n{Format(UrlPrefix, _options.AdapterAddress, options.ListenPort)}latest");
+                $"\nTo stream point VLC or WMP to\n{Format(UrlPrefix, _options.AdapterAddress, options.ListenPort) + options.UrlIdentifier}/latest");
             PrintToConsole("Note: Windows MP only supports SPTS!");
 
             while (!_pendingExit)
@@ -229,7 +229,7 @@ namespace RtpHttpGateway
 
             var prefix = Format(UrlPrefix, "+", _options.ListenPort);
 
-            _listener.Prefixes.Add(prefix);
+            _listener.Prefixes.Add(prefix + _options.UrlIdentifier + "/");
 
             try
             {

@@ -56,5 +56,9 @@ namespace RtpHttpGateway
         [Option('s', "buffersize", Required = false, Default = 100000,
         HelpText = "Optional instruction to control the number of TS packets cached within random access window buffer")]
         public int BufferDepth { get; set; }
+
+        [Option('u', "urlidentifier", Required = true,
+        HelpText = "Text identifier to append to base URL for identifying this specific stream.")]
+        public string UrlIdentifier { get; set; }
     }
 }
