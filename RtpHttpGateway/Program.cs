@@ -140,8 +140,12 @@ namespace RtpHttpGateway
                             Console.WriteLine("\t\t\t\t\t\t\t\t\t");
                             break;
                         }
+                        var delta = _ringBuffer.NextAddPosition - streamClient.ClientPosition;
 
-                        Console.WriteLine($"Client {streamClient.ClientAddress} stream position: {streamClient.ClientPosition} (delta: {_ringBuffer.NextAddPosition - streamClient.ClientPosition})\t\t");
+                        if (delta < 0)
+                            delta += _ringBuffer.BufferSize;
+
+                        Console.WriteLine($"Client {streamClient.ClientAddress} stream position: {streamClient.ClientPosition} (delta: {delta})\t\t");
                     }
                 }
 
