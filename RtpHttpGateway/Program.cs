@@ -15,6 +15,7 @@
 */
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -23,10 +24,7 @@ using System.Threading;
 using CommandLine;
 using static System.String;
 using System.Runtime;
-using System.Text;
-using RtpHttpGateway.Logging;
-using Newtonsoft.Json;
-using System.Diagnostics;
+using Cinegy.TsDecoder.Buffers;
 
 namespace RtpHttpGateway
 {
@@ -41,40 +39,41 @@ namespace RtpHttpGateway
     /// 
     /// Originally created by Lewis, so direct complaints his way.
     /// </summary>
-    class Program
+    public class Program
     {
 
         private enum ExitCodes
         {
-            NullOutputWriter = 100,
-            InvalidContext = 101,
             UrlAccessDenied = 102,
             UnknownError = 2000
         }
 
-        private const string UrlPrefix = "http://{0}:{1}/tsstream/";
-        private const int RtpHeaderSize = 12;
-        private static bool _receiving;
+        private const string UrlPrefix = "http://{0}:{1}/";
         private static UdpClient _udpClient;
         private static HttpListener _listener;
-        private static BinaryWriter _outputWriter;
         private static bool _packetsStarted;
-        private static bool _suppressOutput = false;
+        private static bool _suppressOutput;
         private static bool _pendingExit;
-        private static readonly object LogfileWriteLock = new object();
-        private static StreamWriter _logFileStream;
-
-        private static readonly StringBuilder ConsoleDisplay = new StringBuilder(1024);
-
+        private static RingBuffer _ringBuffer;
         private static StreamOptions _options;
+        private static readonly List<StreamClient> StreamingClients = new List<StreamClient>();
 
-        static int Main(string[] args)
+        private static int Main(string[] args)
         {
-            var result = Parser.Default.ParseArguments<StreamOptions>(args);
+            try
+            {
+                var result = Parser.Default.ParseArguments<StreamOptions>(args);
 
-            return result.MapResult(
-                (StreamOptions opts) => Run(opts),
-                errs => CheckArgumentErrors());
+                return result.MapResult(
+                    Run,
+                    errs => CheckArgumentErrors());
+            }
+            catch (Exception ex)
+            {
+                Environment.ExitCode = (int)ExitCodes.UnknownError;
+                PrintToConsole("Unknown error: " + ex.Message);
+                throw;
+            }
         }
 
         private static int CheckArgumentErrors()
@@ -98,99 +97,94 @@ namespace RtpHttpGateway
             e.Cancel = true;
         }
 
-        private static void PrintToConsole(string message, params object[] arguments)
-        {
-            if (_options.SuppressOutput) return;
-
-            ConsoleDisplay.AppendLine(Format(message, arguments));
-        }
-
-        private static void LogMessage(string message)
-        {
-            var logRecord = new LogRecord()
-            {
-                EventCategory = "Info",
-                EventKey = "GenericEvent",
-                EventTags = _options.DescriptorTags,
-                EventMessage = message
-            };
-            LogMessage(logRecord);
-        }
-
-        private static void LogMessage(LogRecord logRecord)
-        {
-            var formattedMsg = JsonConvert.SerializeObject(logRecord);
-            ThreadPool.QueueUserWorkItem(WriteToFile, formattedMsg);
-        }
-
-        private static void WriteToFile(object line)
-        {
-            lock (LogfileWriteLock)
-            {
-                try
-                {
-                    if (_logFileStream == null || _logFileStream.BaseStream.CanWrite != true)
-                    {
-                        if (IsNullOrWhiteSpace(_options.LogFile)) return;
-
-                        var fs = new FileStream(_options.LogFile, FileMode.Append, FileAccess.Write);
-
-                        _logFileStream = new StreamWriter(fs) { AutoFlush = true };
-                    }
-                    _logFileStream.WriteLine(line);
-                }
-                catch (Exception)
-                {
-                    Debug.WriteLine("Concurrency error writing to log file...");
-                    _logFileStream?.Close();
-                    _logFileStream?.Dispose();
-                }
-            }
-        }
-
         private static int Run(StreamOptions options)
         {
             Console.CancelKeyPress += Console_CancelKeyPress;
-            
+
             _suppressOutput = options.SuppressOutput;
-            
+
             Console.WriteLine(
                // ReSharper disable once AssignNullToNotNullAttribute
                $"Cinegy RTP to HTTP gateway tool (Built: {File.GetCreationTime(Assembly.GetExecutingAssembly().Location)})\n");
-            
+
             _options = options;
 
             GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
-            
+
+            StartListeningToNetwork();
+
             RunWebListener();
 
-            PrintToConsole("--Limited to one client in this version--");
             PrintToConsole("\nWeb listener started, waiting for a client...");
             PrintToConsole(
-                $"\nTo stream point VLC or WMP to\n{Format(UrlPrefix, _options.AdapterAddress, options.ListenPort)}multicast-ip/portnumber");
+                $"\nTo stream point VLC or WMP to\n{Format(UrlPrefix, _options.AdapterAddress, options.ListenPort) + options.UrlIdentifier}/latest");
             PrintToConsole("Note: Windows MP only supports SPTS!");
 
             while (!_pendingExit)
-                Thread.Sleep(50);
+            {
+                Thread.Sleep(100);
+                
+                Console.SetCursorPosition(0, 12);
+                Console.WriteLine($"Client Connection Count: {StreamingClients?.Count}\t\t");
+                Console.WriteLine($"Ring Buffer position: {_ringBuffer.NextAddPosition}\t\t");
+
+                if (StreamingClients == null) continue;
+
+                lock (StreamingClients)
+                {
+                    foreach (var streamClient in StreamingClients)
+                    {
+                        if (streamClient.ThreadState == ThreadState.Stopped)
+                        {
+                            StreamingClients.Remove(streamClient);
+                            Console.WriteLine("\t\t\t\t\t\t\t\t\t");
+                            break;
+                        }
+                        var delta = _ringBuffer.NextAddPosition - streamClient.ClientPosition;
+
+                        if (delta < 0)
+                            delta += _ringBuffer.BufferSize;
+
+                        Console.WriteLine($"Client {streamClient.ClientAddress} stream position: {streamClient.ClientPosition} (delta: {delta})\t\t");
+                    }
+                }
+
+                Console.WriteLine("\t\t\t\t\t\t\t\t\t");
+            }
+
+            if (StreamingClients != null)
+            {
+                lock (StreamingClients)
+                {
+                    foreach (var streamClient in StreamingClients)
+                    {
+                        streamClient.Stop();
+                    }
+                }
+            }
+
+            StopWebListener();
 
             return 0;
-            
+
         }
-        
-        private static void StartListeningToNetwork(string multicastAddress, int multicastGroup)
+
+        private static void StartListeningToNetwork()
         {
             var listenAddress = IsNullOrEmpty(_options.MulticastAdapterAddress) ? IPAddress.Any : IPAddress.Parse(_options.MulticastAdapterAddress);
 
-            var localEp = new IPEndPoint(listenAddress, multicastGroup);
-            
+            var localEp = new IPEndPoint(listenAddress, _options.MulticastGroup);
+
             _udpClient = new UdpClient { ExclusiveAddressUse = false };
+
+            _ringBuffer = new RingBuffer(_options.BufferDepth);
 
             _udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             _udpClient.Client.ReceiveBufferSize = 1500 * 3000;
             _udpClient.ExclusiveAddressUse = false;
             _udpClient.Client.Bind(localEp);
 
-            var parsedMcastAddr = IPAddress.Parse(multicastAddress);
+            var parsedMcastAddr = IPAddress.Parse(_options.MulticastAddress);
             _udpClient.JoinMulticastGroup(parsedMcastAddr, listenAddress);
 
             var ts = new ThreadStart(delegate
@@ -202,11 +196,7 @@ namespace RtpHttpGateway
 
             receiverThread.Start();
 
-            //TODO: Consider to use same thread model as TSAnalyser - and run a thread to empty NIC buffer plus thread to process queue (may be overkill here)
-
-            //var queueThread = new Thread(ProcessQueueWorkerThread) { Priority = ThreadPriority.AboveNormal };
-
-            //queueThread.Start();
+            PrintToConsole($"Listening for Transport Stream on rtp://@{_options.MulticastAddress}:{_options.MulticastGroup}");
         }
 
         private static void ReceivingNetworkWorkerThread(UdpClient client, IPEndPoint localEp)
@@ -214,76 +204,36 @@ namespace RtpHttpGateway
             while (!_pendingExit)
             {
                 var data = client.Receive(ref localEp);
-                if (data != null)
-                {
-                    if (!_packetsStarted)
-                    {
-                        PrintToConsole("Started receiving packets...");
-                        _packetsStarted = true;
-                    }
-                    try
-                    {
-                        if (_outputWriter != null)
-                        {
-                            //TODO: Move this test jitter-inducing code to option
-                            //if (DateTime.Now.Millisecond % 300 == 0 )
-                            //{
-                            //    Console.WriteLine("Adding 100ms cheeky sleep");
-                            //    Thread.Sleep(100);
-                            //}
-                            _outputWriter.Write(data, RtpHeaderSize, data.Length - RtpHeaderSize);
-                        }
-                        else
-                        {
-                            PrintToConsole("Writing to null output writer...");
-                            //Environment.Exit((int)ExitCodes.NullOutputWriter);
-                            client.Close();
-                            RunWebListener();
-                            return;
-                        }
+                if (data == null) continue;
 
-                    }
-                    catch (HttpListenerException listenerException)
-                    {
-                        PrintToConsole(Format(@"Writing to client stopped - probably client disconnected...: {0}", listenerException.Message));
-                        _outputWriter = null;
-                        _receiving = false;
-                        //Environment.Exit((int)ExitCodes.InvalidContext);
-                        client.Close();
-                        RunWebListener();
-                        return;
-                    }
-                    catch (Exception ex)
-                    {
-                        PrintToConsole(Format(@"Unhandled exception within network receiver: {0}", ex.Message));
-                        return;
-                    }
+                if (!_packetsStarted)
+                {
+                    PrintToConsole("Started receiving multicast packets...");
+                    _packetsStarted = true;
+                }
+                try
+                {
+                    _ringBuffer.Add(ref data);
+                }
+                catch (Exception ex)
+                {
+                    PrintToConsole($@"Unhandled exception within network receiver: {ex.Message}");
+                    return;
                 }
             }
         }
 
-        public static void RunWebListener()
+        private static void RunWebListener()
         {
-            try
-            {
-                _listener?.Abort();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Abort failed: {ex.Message}");
-            }
-
             _listener = new HttpListener();
-            var prefixAddr = "127.0.0.1";
 
             if (!IsNullOrEmpty(_options.AdapterAddress))
             {
-                prefixAddr = _options.AdapterAddress;
             }
 
             var prefix = Format(UrlPrefix, "+", _options.ListenPort);
 
-            _listener.Prefixes.Add(prefix);
+            _listener.Prefixes.Add(prefix + _options.UrlIdentifier + "/");
 
             try
             {
@@ -303,7 +253,6 @@ namespace RtpHttpGateway
 
             ThreadPool.QueueUserWorkItem(o =>
             {
-                PrintToConsole(Format(("Webserver running...")));
                 try
                 {
                     while (_listener.IsListening)
@@ -313,58 +262,46 @@ namespace RtpHttpGateway
                             var ctx = c as HttpListenerContext;
                             try
                             {
-                                if (ctx == null)
-                                {
-                                    throw (new InvalidOperationException("Null context - not expected!"));
-                                }
-                                //ctx.Response.SendChunked = false;
+                                if (ctx == null) return;
 
                                 ctx.Response.ContentType = "video/mp2t";
                                 ctx.Response.Headers.Add("Access-Control-Allow-Origin", "*");
 
-                                if (ctx.Request.RemoteEndPoint != null)
-                                    PrintToConsole(Format(@"{0} - Starting output to client: {1}", DateTime.Now.TimeOfDay, ctx.Request.RemoteEndPoint.Address));
+                                if (ctx.Request.RemoteEndPoint == null) return;
 
-                                _outputWriter = new BinaryWriter(ctx.Response.OutputStream);
+                                var streamClient = new StreamClient(_ringBuffer)
+                                {
+                                    OutputWriter = new BinaryWriter(ctx.Response.OutputStream),
+                                    ClientAddress = ctx.Request.RemoteEndPoint.ToString()
 
-                                SetupMulticastReceiverForSession(ctx.Request.Url.ToString());
+                                };
 
+                                lock (StreamingClients)
+                                {
+                                    StreamingClients.Add(streamClient);
+                                }
+
+                                streamClient.Start();
                             }
                             catch (Exception ex)
                             {
-                                PrintToConsole(Format("Exception: {0}", ex.Message));
+                                PrintToConsole($"Exception: {ex.Message}");
                             }
                         }, _listener.GetContext());
                     }
                 }
                 catch (Exception ex)
                 {
-                    PrintToConsole(Format("Exception: {0}", ex.Message));
+                    PrintToConsole($"Exception: {ex.Message}");
                 }
             });
-            
+
         }
 
-        public static void StopWebListener()
+        private static void StopWebListener()
         {
             _listener.Stop();
             _listener.Close();
-        }
-
-        private static void SetupMulticastReceiverForSession(string url)
-        {
-            string multicastAddress;
-            var multicastGroup = 1234;
-
-            if (GetStreamSpecificationsFromUrl(url, out multicastAddress, out multicastGroup))
-            {
-                StartListeningToNetwork(multicastAddress, multicastGroup);
-            }
-            else
-            {
-                PrintToConsole("Unsupported URL request format: " + url);
-            }
-
         }
 
         private static void PrintToConsole(string message)
@@ -375,29 +312,29 @@ namespace RtpHttpGateway
             Console.WriteLine(message);
         }
 
-        private static bool GetStreamSpecificationsFromUrl(string url, out string multicastAddress, out int multicastGroup)
-        {
-            multicastAddress = string.Empty;
-            multicastGroup = 0;
+        //private static bool GetStreamSpecificationsFromUrl(string url, out string multicastAddress, out int multicastGroup)
+        //{
+        //    multicastAddress = string.Empty;
+        //    multicastGroup = 0;
 
-            //should be in the form http://address:port/tsstream/address/port
-            var locTsstream = url.LastIndexOf("/tsstream/", StringComparison.InvariantCulture);
+        //    //should be in the form http://address:port/tsstream/address/port
+        //    var locTsstream = url.LastIndexOf("/tsstream/", StringComparison.InvariantCulture);
 
-            if (locTsstream < 1) return false;
+        //    if (locTsstream < 1) return false;
 
-            var trimmedString = url.Substring(locTsstream);
+        //    var trimmedString = url.Substring(locTsstream);
 
-            var urlParts = trimmedString.Split('/');
+        //    var urlParts = trimmedString.Split('/');
 
-            if (urlParts.Length < 4) return false;
+        //    if (urlParts.Length < 4) return false;
 
-            if (!int.TryParse(urlParts[3], out multicastGroup)) return false;
+        //    if (!int.TryParse(urlParts[3], out multicastGroup)) return false;
 
-            multicastAddress = urlParts[2];
+        //    multicastAddress = urlParts[2];
 
-            return true;
-        }
+        //    return true;
+        //}
 
     }
-    
+
 }
