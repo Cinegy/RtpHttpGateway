@@ -25,6 +25,7 @@ using CommandLine;
 using static System.String;
 using System.Runtime;
 using Cinegy.TsDecoder.Buffers;
+using System.Net.WebSockets;
 
 namespace RtpHttpGateway
 {
@@ -50,7 +51,7 @@ namespace RtpHttpGateway
 
         private const string UrlPrefix = "http://{0}:{1}/";
         private static UdpClient _udpClient;
-        private static HttpListener _listener;
+        private static HttpListener _httpListener;
         private static bool _packetsStarted;
         private static bool _suppressOutput;
         private static bool _pendingExit;
@@ -113,18 +114,18 @@ namespace RtpHttpGateway
 
             StartListeningToNetwork();
 
-            RunWebListener();
-
+            RunHttpListener();
+            
             PrintToConsole("\nWeb listener started, waiting for a client...");
             PrintToConsole(
-                $"\nTo stream point VLC or WMP to\n{Format(UrlPrefix, _options.AdapterAddress, options.ListenPort) + options.UrlIdentifier}/latest");
-            PrintToConsole("Note: Windows MP only supports SPTS!");
+                $"\nTo stream (via HTTP or WebSockets) point VLC or WMP to\n{Format(UrlPrefix, _options.AdapterAddress, options.ListenPort) + options.UrlIdentifier}/latest");
+            PrintToConsole("Note: Windows MediaPlayer only supports SPTS!");
 
             while (!_pendingExit)
             {
                 Thread.Sleep(100);
                 
-                Console.SetCursorPosition(0, 12);
+                Console.SetCursorPosition(0, 11);
                 Console.WriteLine($"Client Connection Count: {StreamingClients?.Count}\t\t");
                 Console.WriteLine($"Ring Buffer position: {_ringBuffer.NextAddPosition}\t\t");
 
@@ -223,9 +224,9 @@ namespace RtpHttpGateway
             }
         }
 
-        private static void RunWebListener()
+        private static void RunHttpListener()
         {
-            _listener = new HttpListener();
+            _httpListener = new HttpListener();
 
             if (!IsNullOrEmpty(_options.AdapterAddress))
             {
@@ -233,11 +234,11 @@ namespace RtpHttpGateway
 
             var prefix = Format(UrlPrefix, "+", _options.ListenPort);
 
-            _listener.Prefixes.Add(prefix + _options.UrlIdentifier + "/");
-
+            _httpListener.Prefixes.Add(prefix + _options.UrlIdentifier + "/");
+            
             try
             {
-                _listener.Start();
+                _httpListener.Start();
             }
             catch (Exception ex)
             {
@@ -255,7 +256,7 @@ namespace RtpHttpGateway
             {
                 try
                 {
-                    while (_listener.IsListening)
+                    while (_httpListener.IsListening)
                     {
                         ThreadPool.QueueUserWorkItem(c =>
                         {
@@ -264,6 +265,8 @@ namespace RtpHttpGateway
                             {
                                 if (ctx == null) return;
 
+                              
+
                                 ctx.Response.ContentType = "video/mp2t";
                                 ctx.Response.Headers.Add("Access-Control-Allow-Origin", "*");
 
@@ -271,10 +274,19 @@ namespace RtpHttpGateway
 
                                 var streamClient = new StreamClient(_ringBuffer)
                                 {
-                                    OutputWriter = new BinaryWriter(ctx.Response.OutputStream),
                                     ClientAddress = ctx.Request.RemoteEndPoint.ToString()
-
                                 };
+
+                                if (ctx.Request.IsWebSocketRequest)
+                                {
+                                    HttpListenerWebSocketContext webSocketContext = ctx.AcceptWebSocketAsync(null).Result;
+                                    WebSocket webSocket = webSocketContext.WebSocket;
+                                    streamClient.WebSocket = webSocket;
+                                }
+                                else
+                                {
+                                    streamClient.OutputWriter = new BinaryWriter(ctx.Response.OutputStream);
+                                }
 
                                 lock (StreamingClients)
                                 {
@@ -287,7 +299,7 @@ namespace RtpHttpGateway
                             {
                                 PrintToConsole($"Exception: {ex.Message}");
                             }
-                        }, _listener.GetContext());
+                        }, _httpListener.GetContext());
                     }
                 }
                 catch (Exception ex)
@@ -300,8 +312,8 @@ namespace RtpHttpGateway
 
         private static void StopWebListener()
         {
-            _listener.Stop();
-            _listener.Close();
+            _httpListener.Stop();
+            _httpListener.Close();
         }
 
         private static void PrintToConsole(string message)

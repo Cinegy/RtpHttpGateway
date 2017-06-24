@@ -2,6 +2,7 @@
 using System.IO;
 using System.Threading;
 using Cinegy.TsDecoder.Buffers;
+using System.Net.WebSockets;
 
 namespace RtpHttpGateway
 {
@@ -10,21 +11,23 @@ namespace RtpHttpGateway
         private readonly RingBuffer _ringBuffer;
 
         private Thread _workerThread;
-        
+
         public StreamClient(RingBuffer ringBuffer)
         {
             _ringBuffer = ringBuffer;
         }
 
         private const int RtpHeaderSize = 12;
-        
+
         public int ClientPosition { get; private set; }
-       
+
         public BinaryWriter OutputWriter
         {
             private get;
             set;
         }
+
+        public WebSocket WebSocket {get;set;}
 
         public string ClientAddress { get; set; }
 
@@ -74,7 +77,16 @@ namespace RtpHttpGateway
                 {
                     if (dataLen != 0)
                     {
-                        client.OutputWriter.Write(data, RtpHeaderSize, dataLen - RtpHeaderSize);
+                        if (WebSocket != null)
+                        {
+                            var arraySeg = WebSocket.CreateServerBuffer(data.Length);
+                            Buffer.BlockCopy(data, RtpHeaderSize, arraySeg.Array, 0, data.Length - RtpHeaderSize);
+                            WebSocket.SendAsync(arraySeg, WebSocketMessageType.Binary, true, new CancellationToken());
+                        }
+                        else
+                        {
+                            client.OutputWriter.Write(data, RtpHeaderSize, dataLen - RtpHeaderSize);
+                        }
                     }
                 }
                 catch (Exception)
