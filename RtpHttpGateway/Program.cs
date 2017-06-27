@@ -265,8 +265,6 @@ namespace RtpHttpGateway
                             {
                                 if (ctx == null) return;
 
-                              
-
                                 ctx.Response.ContentType = "video/mp2t";
                                 ctx.Response.Headers.Add("Access-Control-Allow-Origin", "*");
 

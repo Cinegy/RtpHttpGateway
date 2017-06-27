@@ -79,9 +79,16 @@ namespace RtpHttpGateway
                     {
                         if (WebSocket != null)
                         {
-                            var arraySeg = WebSocket.CreateServerBuffer(data.Length);
-                            Buffer.BlockCopy(data, RtpHeaderSize, arraySeg.Array, 0, data.Length - RtpHeaderSize);
-                            WebSocket.SendAsync(arraySeg, WebSocketMessageType.Binary, true, new CancellationToken());
+                            if (WebSocket.State == WebSocketState.Open)
+                            {
+                                var arraySeg = WebSocket.CreateServerBuffer(data.Length);
+                                Buffer.BlockCopy(data, RtpHeaderSize, arraySeg.Array, 0, data.Length - RtpHeaderSize);
+                                WebSocket.SendAsync(arraySeg, WebSocketMessageType.Binary, true, new CancellationToken());
+                            }
+                            else
+                            {
+                                return;
+                            }
                         }
                         else
                         {
