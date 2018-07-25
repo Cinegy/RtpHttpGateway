@@ -1,6 +1,6 @@
 ﻿# RtpHttpGateway
 
-Use this tool to allow any standard HTTP client to pull any multicast data from the network and relay. It's a prototype, and designed to aide in debugging more than as a production-ready tool - part of the AMWA Labs work Cinegy are carrying out.
+Use this tool to allow any standard HTTP client to pull any multicast data from the network and relay. It's a prototype, and designed to aide in debugging more than as a production-ready tool - but it's open source and anyone is welcome to try it (or even send pull requests!).
 
 ## How easy is it?
 
